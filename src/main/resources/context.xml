@@ -1,0 +1,130 @@
+<?xml  version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xmlns:context="http://www.springframework.org/schema/context"
+        xmlns:util="http://www.springframework.org/schema/util"
+        xsi:schemaLocation="http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://www.springframework.org/schema/context
+       http://www.springframework.org/schema/context/spring-context.xsd
+       http://www.springframework.org/schema/util
+       http://www.springframework.org/schema/util/spring-util-3.1.xsd">
+
+    <!--<context:property-placeholder-->
+    <!--location="/candlestickserver.properties, file:../conf/candlestickserver.properties"-->
+    <!--ignore-resource-not-found="true"-->
+    <!--ignore-unresolvable="false"/>-->
+
+    <context:property-placeholder
+            location="file:../conf/candlestickserver.properties, classpath*:/candlestickserver.properties"
+            ignore-resource-not-found="true"
+            ignore-unresolvable="false"/>
+
+    <!-- коннект для получения торговых данных -->
+    <bean id="tradingDataSocketChannel" class="java.nio.channels.SocketChannel" factory-method="open"
+            destroy-method="close">
+        <constructor-arg>
+            <bean class="java.net.InetSocketAddress">
+                <constructor-arg value="${tradingData.server.host}"/>
+                <constructor-arg value="${tradingData.server.port}"/>
+            </bean>
+        </constructor-arg>
+    </bean>
+
+    <!-- создание серверного сокета для потребителей свечей -->
+    <bean id="serverSocketFactory" class="my.test.exante.util.ServerSocketChannelSelectorFactory" init-method="open"
+            destroy-method="close">
+        <property name="listeningAddress">
+            <bean class="java.net.InetSocketAddress">
+                <constructor-arg value="${listening.server.host}"/>
+                <constructor-arg value="${listening.server.port}"/>
+            </bean>
+        </property>
+    </bean>
+
+    <!-- селектор для подключения потребителей -->
+    <bean id="selector" factory-bean="serverSocketFactory" factory-method="getSelector"/>
+
+
+    <!-- очередь для торговых данных, передача от ресивера к агрегатору -->
+    <bean id="tradingDataQueue" class="java.util.concurrent.LinkedBlockingQueue">
+        <constructor-arg value="1000"/>
+    </bean>
+
+    <!-- очередь для передачи готовых свечей на отправку потребителям -->
+    <bean id="candlestickQueue" class="java.util.concurrent.LinkedBlockingQueue">
+        <constructor-arg value="100"/>
+    </bean>
+
+
+    <bean id="currentTimeService" class="my.test.exante.util.CurrentTimeServiceImpl"/>
+
+    <bean id="executionService" class="java.util.concurrent.ThreadPoolExecutor">
+        <constructor-arg value="${threadPool.corePoolSize}"/>
+        <constructor-arg value="${threadPool.maxPoolSize}"/>
+        <constructor-arg value="${threadPool.keepAliveTime}"/>
+        <constructor-arg>
+            <util:constant static-field="java.util.concurrent.TimeUnit.MICROSECONDS"/>
+        </constructor-arg>
+        <constructor-arg>
+            <bean class="java.util.concurrent.LinkedBlockingQueue">
+                <constructor-arg value="1000"/>
+            </bean>
+        </constructor-arg>
+
+    </bean>
+
+
+    <bean id="tradingDataReader" class="my.test.exante.services.TradingDataReaderService" autowire="byType"/>
+
+    <bean id="candlestickDataHistory" class="my.test.exante.services.CandlestickDataHistoryService" autowire="byType">
+        <!-- храним историю свечей за 10 минут -->
+        <property name="candlesticksHistoryDepth" value="10"/>
+    </bean>
+
+    <bean id="candlestickDataAggregator" class="my.test.exante.services.CandlestickDataAggregatorService"
+            autowire="byType">
+        <property name="tradingDataTimeOut" value="${tradingDataTimeout}"/>
+    </bean>
+
+    <bean id="candlestickDataDistributor" class="my.test.exante.services.CandlestickDataDistributorService">
+        <property name="candlesticksHistory" ref="candlestickDataHistory"/>
+        <property name="executorService" ref="executionService"/>
+    </bean>
+
+    <bean id="tradingDataReceiverRunner"
+            class="my.test.exante.runners.TradingDataReceiverRunner"
+            init-method="startRunner"
+            destroy-method="stopRunner">
+        <property name="currentTimeService" ref="currentTimeService"/>
+        <property name="tradingDataReaderService" ref="tradingDataReader"/>
+        <property name="tradingDataQueue" ref="tradingDataQueue"/>
+        <property name="tradingDataSocketChannel" ref="tradingDataSocketChannel"/>
+    </bean>
+
+
+    <bean id="candlestickAggregatorRunner"
+            class="my.test.exante.runners.CandlestickDataAggregatorRunner"
+            init-method="startRunner"
+            destroy-method="stopRunner">
+        <property name="candlestickDataAggregatorService" ref="candlestickDataAggregator"/>
+        <property name="tradingDataQueue" ref="tradingDataQueue"/>
+        <property name="candlestickDataQueue" ref="candlestickQueue"/>
+    </bean>
+
+    <bean id="candlestickDistributorRunner" class="my.test.exante.runners.CandlestickDataDistributorRunner"
+            init-method="startRunner"
+            destroy-method="stopRunner">
+        <property name="candlestickDataDistributorService" ref="candlestickDataDistributor"/>
+        <property name="candlestickDataQueue" ref="candlestickQueue"/>
+        <property name="candlestickDataHistoryService" ref="candlestickDataHistory"/>
+    </bean>
+
+    <bean id="candlestickServerSocketListener"
+            class="my.test.exante.runners.CandlestickServerSocketListenerRunner"
+            init-method="startRunner"
+            destroy-method="stopRunner">
+        <property name="candlestickDataDistributorService" ref="candlestickDataDistributor"/>
+        <property name="selector" ref="selector"/>
+    </bean>
+</beans>

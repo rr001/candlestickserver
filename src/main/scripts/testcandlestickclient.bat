@@ -1,0 +1,1 @@
+_runclass.bat my.test.exante.TestCandlestickClient
